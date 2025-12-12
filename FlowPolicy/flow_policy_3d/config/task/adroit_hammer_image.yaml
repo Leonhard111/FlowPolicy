@@ -1,4 +1,4 @@
-name: adroit_hammer
+name: adroit_hammer_image
 
 task_name: hammer
 
@@ -6,9 +6,9 @@ image_shape: &image_shape [3, 84, 84]
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
   obs:
-    point_cloud:
-      shape: [512, 3]
-      type: point_cloud
+    image:
+      shape: *image_shape
+      type: rgb
     agent_pos:
       shape: [24]
       type: low_dim
@@ -24,7 +24,7 @@ env_runner:
   fps: 10
   task_name: hammer
   render_size: 84
-  use_point_crop: ${policy.use_point_crop}
+  use_point_crop: False
 
 dataset:
   _target_: flow_policy_3d.dataset.adroit_dataset.AdroitDataset

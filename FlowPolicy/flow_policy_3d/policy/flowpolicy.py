@@ -17,6 +17,7 @@ from flow_policy_3d.model.flow.mask_generator import LowdimMaskGenerator
 from flow_policy_3d.common.pytorch_util import dict_apply
 from flow_policy_3d.common.model_util import print_params
 from flow_policy_3d.model.vision.pointnet_extractor import FlowPolicyEncoder
+from flow_policy_3d.model.vision.resnet_extractor import ResNetEncoder
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -40,6 +41,7 @@ class FlowPolicy(BasePolicy):
             use_pc_color=False,
             pointnet_type="mlp",
             pointcloud_encoder_cfg=None,
+            use_image_obs=False,
             Conditional_ConsistencyFM=None,           
             eta=0.01,
             **kwargs):
@@ -61,14 +63,20 @@ class FlowPolicy(BasePolicy):
         obs_shape_meta = shape_meta['obs']
         obs_dict = dict_apply(obs_shape_meta, lambda x: x['shape'])
         
-        # point cloud encoder
-        obs_encoder = FlowPolicyEncoder(observation_space=obs_dict,
-                                                   img_crop_shape=crop_shape,
-                                                out_channel=encoder_output_dim,
-                                                pointcloud_encoder_cfg=pointcloud_encoder_cfg,
-                                                use_pc_color=use_pc_color,
-                                                pointnet_type=pointnet_type,
-                                                )
+        self.use_image_obs = use_image_obs
+        if use_image_obs:
+            obs_encoder = ResNetEncoder(observation_space=obs_dict,
+                                        out_channel=encoder_output_dim,
+                                        )
+        else:
+            # point cloud encoder
+            obs_encoder = FlowPolicyEncoder(observation_space=obs_dict,
+                                                    img_crop_shape=crop_shape,
+                                                    out_channel=encoder_output_dim,
+                                                    pointcloud_encoder_cfg=pointcloud_encoder_cfg,
+                                                    use_pc_color=use_pc_color,
+                                                    pointnet_type=pointnet_type,
+                                                    )
 
         obs_feature_dim = obs_encoder.output_shape()
         input_dim = action_dim + obs_feature_dim
@@ -149,11 +157,19 @@ class FlowPolicy(BasePolicy):
         result: must include "action" key
         """
         # normalize input
-        nobs = self.normalizer.normalize(obs_dict)
+        if self.use_image_obs:
+            obs_to_norm = {k: v for k, v in obs_dict.items() if k != 'image'}
+            nobs = self.normalizer.normalize(obs_to_norm)
+            nobs['image'] = obs_dict['image']
+        else:
+            nobs = self.normalizer.normalize(obs_dict)
+        
         # this_n_point_cloud = nobs['imagin_robot'][..., :3] # only use coordinate
-        if not self.use_pc_color:
-            nobs['point_cloud'] = nobs['point_cloud'][..., :3]
-        this_n_point_cloud = nobs['point_cloud']
+        if not self.use_image_obs:
+            if not self.use_pc_color:
+                nobs['point_cloud'] = nobs['point_cloud'][..., :3]
+            this_n_point_cloud = nobs['point_cloud']
+        
         value = next(iter(nobs.values()))
         B, To = value.shape[:2]
         T = self.horizon
@@ -245,12 +261,21 @@ class FlowPolicy(BasePolicy):
         delta  = self.delta
         alpha =  self.alpha
         reduce_op = torch.mean
-        nobs = self.normalizer.normalize(batch['obs'])
+        
+        if self.use_image_obs:
+            obs_to_norm = {k: v for k, v in batch['obs'].items() if k != 'image'}
+            nobs = self.normalizer.normalize(obs_to_norm)
+            nobs['image'] = batch['obs']['image']
+        else:
+            nobs = self.normalizer.normalize(batch['obs'])
+            
         nactions = self.normalizer['action'].normalize(batch['action'])
         target = nactions
 
-        if not self.use_pc_color:
-            nobs['point_cloud'] = nobs['point_cloud'][..., :3]
+        if not self.use_image_obs:
+            if not self.use_pc_color:
+                nobs['point_cloud'] = nobs['point_cloud'][..., :3]
+        
         batch_size = nactions.shape[0]
         horizon = nactions.shape[1]
         # handle different ways of passing observation
@@ -271,8 +296,10 @@ class FlowPolicy(BasePolicy):
             else:
                 # reshape back to B, Do
                 global_cond = nobs_features.reshape(batch_size, -1)
-            this_n_point_cloud = this_nobs['point_cloud'].reshape(batch_size,-1, *this_nobs['point_cloud'].shape[1:])
-            this_n_point_cloud = this_n_point_cloud[..., :3]
+            
+            if not self.use_image_obs:
+                this_n_point_cloud = this_nobs['point_cloud'].reshape(batch_size,-1, *this_nobs['point_cloud'].shape[1:])
+                this_n_point_cloud = this_n_point_cloud[..., :3]
         else:
             # reshape B, T, ... to B*T
             this_nobs = dict_apply(nobs, lambda x: x.reshape(-1, *x.shape[2:]))
